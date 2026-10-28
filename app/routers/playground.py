@@ -221,16 +221,18 @@ def create_generation_stream(
                     )
                     return
 
-                from app.engine.generate import stream_generate
+                from app.engine.generate import StopReason, stream_generate
                 from app.engine.tokenizer import NO_SPACE_AFTER, NO_SPACE_BEFORE
 
                 text = ""
                 token_count = 0
                 seed = resolve_seed(params.seed)
+                stop = StopReason()
                 for token in stream_generate(
                     payload.prompt,
                     local_model,
                     GenerationParams(**{**params.__dict__, "seed": seed}),
+                    stop,
                 ):
                     if not text:
                         text = token
@@ -245,7 +247,7 @@ def create_generation_stream(
                     "completion": text.strip(),
                     "tokens_generated": token_count,
                     "latency_ms": int((time.perf_counter() - started) * 1000),
-                    "stop_reason": "max_tokens",
+                    "stop_reason": stop.value,
                     "seed": seed,
                     "model_id": payload.model_id,
                     "backend": "local",

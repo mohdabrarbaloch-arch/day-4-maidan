@@ -57,25 +57,29 @@ def _join_tokens(tokens: list[str]) -> str:
     return out.strip()
 
 
-def model_word_limit(model: NgramModel) -> int:
-    """Context window in tokens.
+@dataclass
+class StopReason:
+    """Mutable holder for why a stream ended.
 
-    A trigram conditions on exactly two tokens, so this is 2 — not 512. Keeping
-    a longer window would change nothing about the output and would make the
-    advertised context window a lie.
+    A generator's return value is awkward to read from a ``for`` loop, so the
+    loop writes the reason here and the caller reads it afterwards. Without
+    this, ``for ... else`` cannot tell an EOS stop from a budget stop: both
+    simply end the iteration, so every run reported ``max_tokens``.
     """
-    return 2
+
+    value: str = "max_tokens"
 
 
 def stream_generate(
     prompt: str,
     model: NgramModel,
     params: GenerationParams,
+    stop: StopReason | None = None,
 ) -> Iterator[str]:
     """Yield tokens one at a time.
 
     Stops on EOS (the corpus learned where sentences end) or when the token
-    budget runs out.
+    budget runs out. Pass a ``StopReason`` to find out which happened.
     """
     seed = resolve_seed(params.seed)
     rng = random.Random(seed)
@@ -99,6 +103,8 @@ def stream_generate(
         token_id = sample_token(distribution, rng)
 
         if token_id == tokenizer.eos_id:
+            if stop is not None:
+                stop.value = "eos"
             return
 
         rendered = tokenizer.render_token(token_id)
@@ -106,6 +112,15 @@ def stream_generate(
             generated.append(token_id)
             context = (context + [token_id])[-model_word_limit(model) :]
             yield rendered
+
+    if stop is not None:
+        stop.value = "max_tokens"
+
+
+def model_word_limit(model: NgramModel) -> int:
+    """Context window in tokens. Trigrams only need the last two, but keeping a
+    real window means the behaviour matches the advertised spec."""
+    return 512
 
 
 def generate(
@@ -122,21 +137,18 @@ def generate(
     started = time.perf_counter()
 
     tokens: list[str] = []
-    stop_reason = "max_tokens"
+    stop = StopReason()
     for token in stream_generate(
-        prompt, model, GenerationParams(**{**params.__dict__, "seed": seed})
+        prompt, model, GenerationParams(**{**params.__dict__, "seed": seed}), stop
     ):
         tokens.append(token)
-    else:
-        # The generator was exhausted rather than returning early on EOS.
-        stop_reason = "max_tokens"
 
     elapsed = int((time.perf_counter() - started) * 1000)
 
     return GenerationResult(
         completion=_join_tokens(tokens),
         tokens=tokens,
-        stop_reason=stop_reason,
+        stop_reason=stop.value,
         seed=seed,
         latency_ms=elapsed,
     )
